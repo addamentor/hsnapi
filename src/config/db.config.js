@@ -3,7 +3,7 @@
  * Per-project database configuration with environment support (local/prod)
  */
 
-const DB_ENV = process.env.DB_ENV || 'local'; // 'local' or 'prod'
+const DB_ENV = process.env.DB_ENV || 'prod'; // 'local' or 'prod'
 
 /**
  * Database configurations for each project
