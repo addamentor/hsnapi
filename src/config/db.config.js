@@ -30,24 +30,19 @@ const dbConfigs = {
         },
         prod: {
             dialect: process.env.HSNWEB_PROD_DB_DIALECT || 'mysql',
-            host: process.env.HSNWEB_PROD_DB_HOST,
+            host: process.env.HSNWEB_PROD_DB_HOST || 'localhost',
             port: parseInt(process.env.HSNWEB_PROD_DB_PORT) || 3306,
             database: process.env.HSNWEB_PROD_DB_NAME,
             username: process.env.HSNWEB_PROD_DB_USER,
             password: process.env.HSNWEB_PROD_DB_PASS,
-            logging: false,
+            logging: console.log, // Enable logging temporarily to debug
             pool: {
                 max: 10,
                 min: 2,
                 acquire: 30000,
                 idle: 10000
-            },
-            dialectOptions: {
-                ssl: {
-                    require: true,
-                    rejectUnauthorized: false
-                }
             }
+            // SSL disabled for Hostinger MySQL (internal connection)
         }
     },
     
