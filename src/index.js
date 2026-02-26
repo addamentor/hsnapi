@@ -54,6 +54,46 @@ app.get('/health', (req, res) => {
     });
 });
 
+// Initialize DB before routes are used
+let dbInitialized = false;
+let dbInitPromise = null;
+
+async function ensureDbInitialized() {
+    if (dbInitialized) return true;
+    if (dbInitPromise) return dbInitPromise;
+    
+    dbInitPromise = (async () => {
+        try {
+            console.log('Initializing database on first request...');
+            await dbManager.initProject('hsnweb');
+            hsnwebModels.initModels();
+            await dbManager.syncProject('hsnweb', { alter: true });
+            dbInitialized = true;
+            console.log('✅ Database initialized successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Database initialization failed:', error);
+            dbInitPromise = null;
+            throw error;
+        }
+    })();
+    
+    return dbInitPromise;
+}
+
+// Middleware to ensure DB is ready before handling requests
+app.use('/api', async (req, res, next) => {
+    try {
+        await ensureDbInitialized();
+        next();
+    } catch (error) {
+        res.status(503).json({
+            success: false,
+            message: 'Database not available. Please try again.'
+        });
+    }
+});
+
 // Project routes - modular structure
 app.use('/api/hsnweb', hsnwebRoutes);
 app.use('/api/aihunar', aihunarRoutes);
@@ -96,19 +136,8 @@ async function startServer() {
             port: hsnwebConfig.port
         });
         
-        // Initialize hsnweb database
-        console.log('Connecting to hsnweb database...');
-        await dbManager.initProject('hsnweb');
-        console.log('✅ Database connected');
-        
-        console.log('Initializing hsnweb models...');
-        const models = hsnwebModels.initModels();
-        console.log('✅ Models initialized:', Object.keys(models));
-        
-        // Sync database (creates tables if not exist)
-        console.log('Syncing hsnweb database (creating tables)...');
-        await dbManager.syncProject('hsnweb', { alter: true });
-        console.log('✅ Database sync complete - tables created/updated');
+        // Initialize database (will be reused if already initialized by middleware)
+        await ensureDbInitialized();
         
         // Verify models are accessible
         const registeredModels = dbManager.getModels('hsnweb');
