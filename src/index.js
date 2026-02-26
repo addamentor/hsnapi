@@ -73,6 +73,18 @@ async function startServer() {
     try {
         console.log('\n🔗 Initializing databases...\n');
         console.log('DB_ENV:', getDbEnv());
+        console.log('NODE_ENV:', config.env);
+        
+        // Log DB config (without password)
+        const dbConfig = require('./config/db.config');
+        const hsnwebConfig = dbConfig.getDbConfig('hsnweb');
+        console.log('DB Config:', {
+            dialect: hsnwebConfig.dialect,
+            host: hsnwebConfig.host,
+            database: hsnwebConfig.database,
+            username: hsnwebConfig.username,
+            port: hsnwebConfig.port
+        });
         
         // Initialize hsnweb database
         console.log('Connecting to hsnweb database...');
