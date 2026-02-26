@@ -5,6 +5,17 @@ const response = require('../../../utils/response');
 const { sendContactNotification } = require('../../../utils/mailer');
 const dbManager = require('../../../database/DatabaseManager');
 
+// Helper to get models with better error handling
+const getModel = (modelName) => {
+    try {
+        const model = dbManager.getModel('hsnweb', modelName);
+        return model;
+    } catch (error) {
+        console.error(`Model ${modelName} not available. DB Status:`, dbManager.getStatus());
+        throw error;
+    }
+};
+
 /**
  * Handle contact form submission
  * POST /api/hsnweb/contact
@@ -26,8 +37,12 @@ const submitContact = async (req, res) => {
             timestamp: new Date().toISOString()
         });
         
+        // Check if database is ready
+        const dbStatus = dbManager.getStatus();
+        console.log('DB Status at submission:', JSON.stringify(dbStatus));
+        
         // Save to database
-        const ContactSubmission = dbManager.getModel('hsnweb', 'ContactSubmission');
+        const ContactSubmission = getModel('ContactSubmission');
         let emailSent = false;
         
         // Send email notification first
@@ -85,7 +100,7 @@ const subscribeNewsletter = async (req, res) => {
         const { email, name, source } = req.body;
         const ipAddress = req.ip || req.connection.remoteAddress || null;
         
-        const NewsletterSubscription = dbManager.getModel('hsnweb', 'NewsletterSubscription');
+        const NewsletterSubscription = getModel('NewsletterSubscription');
         
         // Check if already subscribed
         const existing = await NewsletterSubscription.findOne({ where: { email } });
@@ -138,7 +153,7 @@ const subscribeNewsletter = async (req, res) => {
 const getContactSubmissions = async (req, res) => {
     try {
         const { status, page = 1, limit = 20 } = req.query;
-        const ContactSubmission = dbManager.getModel('hsnweb', 'ContactSubmission');
+        const ContactSubmission = getModel('ContactSubmission');
         
         const where = {};
         if (status) where.status = status;
@@ -177,7 +192,7 @@ const updateContactStatus = async (req, res) => {
         const { id } = req.params;
         const { status, notes } = req.body;
         
-        const ContactSubmission = dbManager.getModel('hsnweb', 'ContactSubmission');
+        const ContactSubmission = getModel('ContactSubmission');
         
         const submission = await ContactSubmission.findByPk(id);
         if (!submission) {
@@ -204,7 +219,7 @@ const updateContactStatus = async (req, res) => {
 const getNewsletterSubscribers = async (req, res) => {
     try {
         const { active, page = 1, limit = 50 } = req.query;
-        const NewsletterSubscription = dbManager.getModel('hsnweb', 'NewsletterSubscription');
+        const NewsletterSubscription = getModel('NewsletterSubscription');
         
         const where = {};
         if (active !== undefined) where.isActive = active === 'true';

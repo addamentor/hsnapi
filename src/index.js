@@ -16,6 +16,9 @@ const aihunarRoutes = require('./projects/aihunar/routes');
 // Import project models
 const hsnwebModels = require('./projects/hsnweb/models');
 
+// Guard against multiple starts
+let serverStarted = false;
+
 const app = express();
 
 // Security middleware
@@ -70,6 +73,13 @@ app.use(errorHandler);
  * Initialize databases and start server
  */
 async function startServer() {
+    // Prevent multiple starts
+    if (serverStarted) {
+        console.log('Server already started, ignoring duplicate call');
+        return;
+    }
+    serverStarted = true;
+    
     try {
         console.log('\n🔗 Initializing databases...\n');
         console.log('DB_ENV:', getDbEnv());
