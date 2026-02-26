@@ -89,14 +89,20 @@ async function startServer() {
         // Initialize hsnweb database
         console.log('Connecting to hsnweb database...');
         await dbManager.initProject('hsnweb');
+        console.log('✅ Database connected');
+        
         console.log('Initializing hsnweb models...');
-        hsnwebModels.initModels();
+        const models = hsnwebModels.initModels();
+        console.log('✅ Models initialized:', Object.keys(models));
         
         // Sync database (creates tables if not exist)
-        // alter: true will create missing tables and add missing columns
         console.log('Syncing hsnweb database (creating tables)...');
         await dbManager.syncProject('hsnweb', { alter: true });
         console.log('✅ Database sync complete - tables created/updated');
+        
+        // Verify models are accessible
+        const registeredModels = dbManager.getModels('hsnweb');
+        console.log('✅ Registered models:', Object.keys(registeredModels));
         
         // Initialize aihunar database (uncomment when needed)
         // await dbManager.initProject('aihunar');

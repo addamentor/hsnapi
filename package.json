@@ -4,7 +4,6 @@
   "description": "Generic API provider for HSN Tech projects",
   "main": "src/index.js",
   "scripts": {
-    "prestart": "node src/scripts/syncDb.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "db:sync": "node src/scripts/syncDb.js",
