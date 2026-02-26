@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+.DS_Store
+
+# Database
+data/*.sqlite
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
