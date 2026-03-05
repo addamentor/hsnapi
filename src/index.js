@@ -67,7 +67,9 @@ async function ensureDbInitialized() {
             console.log('Initializing database on first request...');
             await dbManager.initProject('hsnweb');
             hsnwebModels.initModels();
-            await dbManager.syncProject('hsnweb', { alter: true });
+            // Use alter:true only in dev; in prod just ensure tables exist
+            const syncOptions = config.env === 'development' ? { alter: true } : { alter: false };
+            await dbManager.syncProject('hsnweb', syncOptions);
             dbInitialized = true;
             console.log('✅ Database initialized successfully');
             return true;
