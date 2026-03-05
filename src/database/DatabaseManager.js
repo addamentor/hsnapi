@@ -34,10 +34,6 @@ class DatabaseManager {
                 define: config.define
             });
         } else {
-            console.log("db password is " + config.password);
-            console.log("db username is " + config.username);
-            console.log("db host is " + config.host);
-            console.log("db name is " + config.database);
             sequelize = new Sequelize(
                 config.database,
                 config.username,
