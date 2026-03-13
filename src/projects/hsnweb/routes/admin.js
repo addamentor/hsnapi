@@ -18,6 +18,7 @@ const productsController = require('../controllers/admin/productsController');
 const sapAddonsController = require('../controllers/admin/sapAddonsController');
 const testimonialsController = require('../controllers/admin/testimonialsController');
 const siteConfigController = require('../controllers/admin/siteConfigController');
+const seedController = require('../controllers/admin/seedController');
 
 // ==========================================
 // AUTH ROUTES (Public)
@@ -115,5 +116,11 @@ router.post('/config', authenticate, adminOnly, siteConfigController.set);
 router.post('/config/bulk', authenticate, adminOnly, siteConfigController.bulkSet);
 router.post('/config/init-defaults', authenticate, superAdminOnly, siteConfigController.initDefaults);
 router.delete('/config/:key', authenticate, superAdminOnly, siteConfigController.remove);
+
+// ==========================================
+// DATABASE SEED ROUTES (Super Admin only)
+// ==========================================
+router.get('/seed/status', authenticate, superAdminOnly, seedController.getStatus);
+router.post('/seed/run', authenticate, superAdminOnly, seedController.seedAll);
 
 module.exports = router;
