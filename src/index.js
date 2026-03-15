@@ -99,6 +99,7 @@ app.use('/api', async (req, res, next) => {
 // Project routes - modular structure
 app.use('/api/hsnweb', hsnwebRoutes);
 app.use('/api/aihunar', aihunarRoutes);
+app.use('/api/n8n', n8nRoutes);
 
 // 404 handler
 app.use((req, res) => {
