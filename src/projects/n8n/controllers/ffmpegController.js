@@ -4,6 +4,15 @@ const path = require('path');
 const os = require('os');
 const multer = require('multer');
 
+// Set FFmpeg path if specified in environment variable
+// On Hostinger, set FFMPEG_PATH=/home/YOUR_USERNAME/bin/ffmpeg in .env
+if (process.env.FFMPEG_PATH) {
+  ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH);
+}
+if (process.env.FFPROBE_PATH) {
+  ffmpeg.setFfprobePath(process.env.FFPROBE_PATH);
+}
+
 // Use system temp directory - files are automatically cleaned by OS if not deleted
 const uploadDir = path.join(os.tmpdir(), 'ffmpeg-temp');
 if (!fs.existsSync(uploadDir)) {
