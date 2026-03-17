@@ -183,7 +183,10 @@ const submitFfmpeg = (req, res) => {
     .inputOptions(['-f', 'concat', '-safe', '0'])
     .input(audioFile)
     .outputOptions([
+      '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1',  // Scale to 720p, pad to fit, fix aspect ratio
       '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '23',
       '-pix_fmt', 'yuv420p',
       '-c:a', 'aac',
       '-b:a', '192k',
@@ -191,7 +194,7 @@ const submitFfmpeg = (req, res) => {
       '-movflags', '+faststart'
     ])
     .on('start', (cmd) => {
-      console.log('FFmpeg started, processing...');
+      console.log('FFmpeg started:', cmd);
     })
     .on('end', () => {
       console.log('Video generation complete, sending to client...');
