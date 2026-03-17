@@ -12,6 +12,7 @@ const { getDbEnv } = require('./config/db.config');
 // Import project routes
 const hsnwebRoutes = require('./projects/hsnweb/routes');
 const aihunarRoutes = require('./projects/aihunar/routes');
+const n8nRoutes = require('./projects/n8n/routes');
 
 // Import project models
 const hsnwebModels = require('./projects/hsnweb/models');
