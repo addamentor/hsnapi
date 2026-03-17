@@ -17,13 +17,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Multer middleware for handling the 5 files
+// Multer middleware - only for audio file now
 const uploadFields = upload.fields([
-  { name: 'audio', maxCount: 1 },
-  { name: 'image1', maxCount: 1 },
-  { name: 'image2', maxCount: 1 },
-  { name: 'image3', maxCount: 1 },
-  { name: 'image4', maxCount: 1 }
+  { name: 'audio', maxCount: 1 }
 ]);
 
 // Helper to safely delete files immediately
@@ -40,7 +36,44 @@ const cleanupFiles = (files) => {
   });
 };
 
-// Controller function to create video from images + audio
+// Helper to decode base64 and save as temp file
+const saveBase64Image = (base64String, filename) => {
+  // Remove data URL prefix if present (e.g., "data:image/png;base64,")
+  let base64Data = base64String.replace(/^data:image\/\w+;base64,/, '');
+  
+  // Also handle whitespace/newlines that might be in the base64 string
+  base64Data = base64Data.replace(/\s/g, '');
+  
+  // Detect image format from data URL prefix first
+  let extension = null;
+  const match = base64String.match(/^data:image\/(\w+);base64,/);
+  if (match) {
+    extension = match[1] === 'jpeg' ? 'jpg' : match[1];
+  }
+  
+  // If no prefix, detect from base64 signature (magic bytes)
+  if (!extension) {
+    if (base64Data.startsWith('/9j/')) {
+      extension = 'jpg';  // JPEG
+    } else if (base64Data.startsWith('iVBOR')) {
+      extension = 'png';  // PNG
+    } else if (base64Data.startsWith('R0lG')) {
+      extension = 'gif';  // GIF
+    } else if (base64Data.startsWith('UklGR')) {
+      extension = 'webp'; // WebP
+    } else {
+      extension = 'jpg';  // Default to jpg
+    }
+  }
+  
+  const filePath = path.join(uploadDir, `${filename}.${extension}`);
+  const buffer = Buffer.from(base64Data, 'base64');
+  fs.writeFileSync(filePath, buffer);
+  
+  return filePath;
+};
+
+// Controller function to create video from images (base64) + audio (file)
 const submitFfmpeg = (req, res) => {
   let filesToCleanup = [];
   let ffmpegProcess = null;
@@ -67,47 +100,63 @@ const submitFfmpeg = (req, res) => {
     }
   });
 
-  // Validate all required files are present
-  const requiredFields = ['audio', 'image1', 'image2', 'image3', 'image4'];
-  for (const field of requiredFields) {
-    if (!req.files || !req.files[field] || !req.files[field][0]) {
-      // Clean up any files that were uploaded before the error
-      if (req.files) {
-        Object.values(req.files).flat().forEach(f => {
-          if (f && f.path) cleanupFiles([f.path]);
-        });
-      }
-      return res.status(400).json({ 
-        success: false, 
-        error: `Missing required file: ${field}` 
-      });
+  // Validate audio file
+  if (!req.files || !req.files.audio || !req.files.audio[0]) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Missing required file: audio' 
+    });
+  }
+
+  // Validate base64 images from body
+  const { image1, image2, image3, image4 } = req.body;
+  if (!image1 || !image2 || !image3 || !image4) {
+    // Cleanup uploaded audio
+    if (req.files && req.files.audio) {
+      cleanupFiles([req.files.audio[0].path]);
     }
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Missing required base64 images. Provide image1, image2, image3, image4 in request body.' 
+    });
   }
 
   const audioFile = req.files.audio[0].path;
-  const image1 = req.files.image1[0].path;
-  const image2 = req.files.image2[0].path;
-  const image3 = req.files.image3[0].path;
-  const image4 = req.files.image4[0].path;
-  
   const timestamp = Date.now();
+  
+  let image1Path, image2Path, image3Path, image4Path;
+  
+  try {
+    // Decode and save base64 images
+    image1Path = saveBase64Image(image1, `image1_${timestamp}`);
+    image2Path = saveBase64Image(image2, `image2_${timestamp}`);
+    image3Path = saveBase64Image(image3, `image3_${timestamp}`);
+    image4Path = saveBase64Image(image4, `image4_${timestamp}`);
+  } catch (err) {
+    cleanupFiles([audioFile]);
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Invalid base64 image data: ' + err.message 
+    });
+  }
+  
   const concatFile = path.join(uploadDir, `concat_${timestamp}.txt`);
   const outputFile = path.join(uploadDir, `output_${timestamp}.mp4`);
   
-  filesToCleanup = [audioFile, image1, image2, image3, image4, concatFile, outputFile];
+  filesToCleanup = [audioFile, image1Path, image2Path, image3Path, image4Path, concatFile, outputFile];
 
   // Create concat file with absolute paths (use forward slashes for FFmpeg)
   const formatPath = (p) => p.replace(/\\/g, '/');
   const concatContent = [
-    `file '${formatPath(image1)}'`,
+    `file '${formatPath(image1Path)}'`,
     `duration 7`,
-    `file '${formatPath(image2)}'`,
+    `file '${formatPath(image2Path)}'`,
     `duration 7`,
-    `file '${formatPath(image3)}'`,
+    `file '${formatPath(image3Path)}'`,
     `duration 7`,
-    `file '${formatPath(image4)}'`,
+    `file '${formatPath(image4Path)}'`,
     `duration 7`,
-    `file '${formatPath(image4)}'`  // Last image repeated to ensure final duration
+    `file '${formatPath(image4Path)}'`  // Last image repeated to ensure final duration
   ].join('\n');
 
   try {
