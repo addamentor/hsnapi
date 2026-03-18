@@ -447,7 +447,7 @@ const submitFfmpegEnhanced = (req, res) => {
     // For now keep it simple - just the zoom
   }
 
-  // Hook text overlay
+  // Hook text overlay - positioned at top with no gap
   if (hookText) {
     const escapedText = hookText
       .replace(/'/g, "'\\\\\\''")
@@ -455,8 +455,11 @@ const submitFfmpegEnhanced = (req, res) => {
       .replace(/\\/g, '\\\\');
     
     const fontSize = isReel ? 36 : 42;
+    const padding = isReel ? 8 : 15;
+    const yPosition = isReel ? 0 : 30;
+    // For reel: y=0 to position at very top; For youtube: y=padding
     videoFilters.push(
-      `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:x=(w-text_w)/2:y=30:box=1:boxcolor=black@0.7:boxborderw=15`
+      `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:x=(w-text_w)/2:y=${yPosition}:box=1:boxcolor=black@0.8:boxborderw=${padding}`
     );
   }
 
