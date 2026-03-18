@@ -299,7 +299,7 @@ const submitFfmpegEnhanced = (req, res) => {
     subtitles,
     kenBurns = false,
     bgMusicVolume = 20,
-    videoType = 'youtube',  // 'youtube' (16:9) or 'reel' (9:16)
+    videoType = 'youtube',
     imageDuration = 7
   } = req.body;
 
@@ -322,9 +322,10 @@ const submitFfmpegEnhanced = (req, res) => {
 
   // Determine dimensions based on video type
   const isReel = videoType === 'reel' || videoType === 'shorts';
-  const width = isReel ? 1080 : 1920;
-  const height = isReel ? 1920 : 1080;
+  const width = isReel ? 1080 : 1280;
+  const height = isReel ? 1920 : 720;
   const duration = parseFloat(imageDuration) || 7;
+  const fps = 25;
 
   let image1Path, image2Path, image3Path, image4Path;
   
@@ -341,27 +342,56 @@ const submitFfmpegEnhanced = (req, res) => {
     });
   }
 
+  const concatFile = path.join(uploadDir, `concat_${timestamp}.txt`);
   const outputFile = path.join(uploadDir, `output_${timestamp}.mp4`);
   const subtitleFile = path.join(uploadDir, `subs_${timestamp}.srt`);
   
   filesToCleanup = [
     audioFile, bgMusicFile, 
     image1Path, image2Path, image3Path, image4Path, 
-    outputFile, subtitleFile
+    concatFile, outputFile, subtitleFile
   ].filter(Boolean);
 
+  // Create concat file
+  const formatPath = (p) => p.replace(/\\/g, '/');
+  const images = [image1Path, image2Path, image3Path, image4Path];
+  const concatContent = images.map((img, i) => {
+    let content = `file '${formatPath(img)}'\nduration ${duration}`;
+    if (i === images.length - 1) {
+      content += `\nfile '${formatPath(img)}'`; // Repeat last image
+    }
+    return content;
+  }).join('\n');
+
+  try {
+    fs.writeFileSync(concatFile, concatContent);
+  } catch (err) {
+    performCleanup();
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Failed to create concat file: ' + err.message 
+    });
+  }
+
   // Generate SRT subtitle file if subtitles provided
+  let hasSubtitles = false;
   if (subtitles) {
     try {
       let srtContent = '';
+      let subsData = subtitles;
       
-      if (typeof subtitles === 'string') {
-        // Already in SRT format
-        srtContent = subtitles;
-      } else if (Array.isArray(subtitles)) {
-        // Convert array format to SRT
-        // Expected: [{start: "00:00:01,000", end: "00:00:05,000", text: "Hello"}]
-        subtitles.forEach((sub, index) => {
+      // Parse if JSON string
+      if (typeof subtitles === 'string' && subtitles.trim().startsWith('[')) {
+        try {
+          subsData = JSON.parse(subtitles);
+        } catch (e) {
+          // Not JSON, treat as SRT
+          srtContent = subtitles;
+        }
+      }
+      
+      if (Array.isArray(subsData)) {
+        subsData.forEach((sub, index) => {
           srtContent += `${index + 1}\n`;
           srtContent += `${sub.start} --> ${sub.end}\n`;
           srtContent += `${sub.text}\n\n`;
@@ -370,138 +400,84 @@ const submitFfmpegEnhanced = (req, res) => {
       
       if (srtContent) {
         fs.writeFileSync(subtitleFile, srtContent);
+        hasSubtitles = true;
       }
     } catch (err) {
       console.error('Subtitle parsing error:', err.message);
-      // Continue without subtitles
     }
   }
 
-  // Build FFmpeg command
-  const ffmpegCmd = ffmpeg();
-  const images = [image1Path, image2Path, image3Path, image4Path];
+  // Build filter chain
+  let videoFilters = [];
   
-  // Add each image as input
-  images.forEach(img => {
-    ffmpegCmd.input(img).inputOptions(['-loop', '1', '-t', String(duration)]);
-  });
+  // Scale and pad
+  videoFilters.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`);
+  videoFilters.push(`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`);
+  videoFilters.push(`setsar=1`);
+  videoFilters.push(`fps=${fps}`);
+  
+  // Ken Burns effect (simple zoom)
+  const useKenBurns = kenBurns === true || kenBurns === 'true';
+  if (useKenBurns) {
+    const totalFrames = duration * fps * 4; // Total frames for all images
+    videoFilters.push(`zoompan=z='1+0.001*on':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${fps}`);
+  }
 
-  // Add audio input
-  ffmpegCmd.input(audioFile);
-  
+  // Hook text overlay
+  if (hookText) {
+    const escapedText = hookText
+      .replace(/'/g, "'\\\\\\''")
+      .replace(/:/g, '\\:')
+      .replace(/\\/g, '\\\\');
+    
+    const fontSize = isReel ? 36 : 42;
+    videoFilters.push(
+      `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:x=(w-text_w)/2:y=30:box=1:boxcolor=black@0.7:boxborderw=15`
+    );
+  }
+
+  // Build ffmpeg command
+  const ffmpegCmd = ffmpeg()
+    .input(concatFile)
+    .inputOptions(['-f', 'concat', '-safe', '0'])
+    .input(audioFile);
+
   // Add background music if provided
   if (bgMusicFile) {
     ffmpegCmd.input(bgMusicFile);
   }
 
-  // Build complex filter
-  let filterComplex = [];
-  const numImages = images.length;
-  
-  // Process each image
-  for (let i = 0; i < numImages; i++) {
-    let imgFilter = `[${i}:v]`;
-    
-    // Scale and pad to target dimensions
-    imgFilter += `scale=${width}:${height}:force_original_aspect_ratio=decrease,`;
-    imgFilter += `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,`;
-    imgFilter += `setsar=1`;
-    
-    // Ken Burns effect (zoom and pan)
-    if (kenBurns === true || kenBurns === 'true') {
-      // Alternate between zoom in/out and pan directions
-      const fps = 30;
-      const totalFrames = duration * fps;
-      const zoomStart = i % 2 === 0 ? 1 : 1.2;
-      const zoomEnd = i % 2 === 0 ? 1.2 : 1;
-      const zoomStep = (zoomEnd - zoomStart) / totalFrames;
-      
-      // Different pan directions for variety
-      const panX = i % 2 === 0 ? `iw/2-(iw/zoom/2)` : `(iw-iw/zoom)/2*on/${totalFrames}`;
-      const panY = i % 3 === 0 ? `ih/2-(ih/zoom/2)` : `(ih-ih/zoom)/2`;
-      
-      imgFilter += `,zoompan=z='${zoomStart}+${zoomStep}*on':x='${panX}':y='${panY}':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
-    }
-    
-    imgFilter += `[v${i}]`;
-    filterComplex.push(imgFilter);
-  }
+  // Build output options
+  let outputOptions = [
+    '-vf', videoFilters.join(','),
+    '-c:v', 'libx264',
+    '-preset', 'fast',
+    '-crf', '23',
+    '-pix_fmt', 'yuv420p',
+    '-r', String(fps)
+  ];
 
-  // Concat all video streams
-  let concatInput = '';
-  for (let i = 0; i < numImages; i++) {
-    concatInput += `[v${i}]`;
-  }
-  filterComplex.push(`${concatInput}concat=n=${numImages}:v=1:a=0[vconcat]`);
-
-  // Add hook text overlay if provided
-  let videoStream = '[vconcat]';
-  if (hookText) {
-    // Escape special characters for FFmpeg drawtext
-    const escapedText = hookText
-      .replace(/\\/g, '\\\\')
-      .replace(/'/g, "'\\''")
-      .replace(/:/g, '\\:');
-    
-    const fontSize = isReel ? 42 : 48;
-    const boxPadding = 20;
-    
-    filterComplex.push(
-      `${videoStream}drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:` +
-      `x=(w-text_w)/2:y=${boxPadding + 10}:` +
-      `box=1:boxcolor=black@0.7:boxborderw=${boxPadding}[vtext]`
-    );
-    videoStream = '[vtext]';
-  }
-
-  // Add subtitles if file exists and has content
-  if (subtitles && fs.existsSync(subtitleFile) && fs.statSync(subtitleFile).size > 0) {
-    const subPath = subtitleFile.replace(/\\/g, '/').replace(/:/g, '\\:');
-    const subFontSize = isReel ? 24 : 28;
-    
-    filterComplex.push(
-      `${videoStream}subtitles='${subPath}':force_style='FontSize=${subFontSize},PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=50'[vsub]`
-    );
-    videoStream = '[vsub]';
-  }
-
-  // Audio mixing
-  const audioInputIndex = numImages;
-  const bgMusicInputIndex = numImages + 1;
-  
+  // Handle audio
   if (bgMusicFile) {
-    // Mix main audio with background music
-    const mainVol = 1.0;
     const bgVol = Math.min(100, Math.max(0, parseFloat(bgMusicVolume) || 20)) / 100;
-    
-    filterComplex.push(
-      `[${audioInputIndex}:a]volume=${mainVol}[amain]`,
-      `[${bgMusicInputIndex}:a]volume=${bgVol},aloop=loop=-1:size=2e+09[abg]`,
-      `[amain][abg]amix=inputs=2:duration=shortest:dropout_transition=2[aout]`
-    );
+    outputOptions.push('-filter_complex', `[1:a]volume=1[a1];[2:a]volume=${bgVol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`);
+    outputOptions.push('-map', '0:v');
+    outputOptions.push('-map', '[aout]');
   } else {
-    filterComplex.push(`[${audioInputIndex}:a]anull[aout]`);
+    outputOptions.push('-c:a', 'aac');
+    outputOptions.push('-b:a', '192k');
   }
 
-  // Apply filter complex
-  ffmpegCmd
-    .complexFilter(filterComplex.join(';'))
-    .outputOptions([
-      '-map', videoStream,
-      '-map', '[aout]',
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '23',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-shortest',
-      '-movflags', '+faststart'
-    ]);
+  outputOptions.push('-shortest');
+  outputOptions.push('-movflags', '+faststart');
 
   ffmpegProcess = ffmpegCmd
+    .outputOptions(outputOptions)
     .on('start', (cmd) => {
       console.log('FFmpeg Enhanced started:', cmd);
+    })
+    .on('stderr', (line) => {
+      console.log('FFmpeg:', line);
     })
     .on('end', () => {
       console.log('Enhanced video generation complete');
