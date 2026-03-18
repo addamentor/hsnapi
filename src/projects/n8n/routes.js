@@ -25,6 +25,12 @@ router.post('/ffmpeg',
     ffmpeg.submitFfmpeg
 );
 
+// Enhanced video creation with effects, subtitles, background music
+router.post('/ffmpeg/enhanced', 
+    ffmpeg.uploadFieldsEnhanced,
+    ffmpeg.submitFfmpegEnhanced
+);
+
 // TODO: Add N8N specific routes here
 // Example:
 // const userController = require('./controllers/userController');
