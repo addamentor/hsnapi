@@ -15,12 +15,22 @@ if (process.env.FFPROBE_PATH) {
 
 // Use system temp directory - files are automatically cleaned by OS if not deleted
 const uploadDir = path.join(os.tmpdir(), 'ffmpeg-temp');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+
+// Ensure upload directory exists (called before each operation)
+const ensureUploadDir = () => {
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+};
+
+// Create directory on startup
+ensureUploadDir();
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
+  destination: (req, file, cb) => {
+    ensureUploadDir(); // Ensure dir exists before storing
+    cb(null, uploadDir);
+  },
   filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.originalname}`)
 });
 
@@ -155,6 +165,9 @@ const submitFfmpeg = (req, res) => {
     });
   }
   
+  // Ensure upload dir exists
+  ensureUploadDir();
+  
   const concatFile = path.join(uploadDir, `concat_${timestamp}.txt`);
   const outputFile = path.join(uploadDir, `output_${timestamp}.mp4`);
   
@@ -176,6 +189,7 @@ const submitFfmpeg = (req, res) => {
 
   try {
     fs.writeFileSync(concatFile, concatContent);
+    console.log('Concat file created:', concatFile);
   } catch (err) {
     performCleanup();
     return res.status(500).json({ 
@@ -321,11 +335,12 @@ const submitFfmpegEnhanced = (req, res) => {
   const timestamp = Date.now();
 
   // Determine dimensions based on video type
+  // Using conservative dimensions for better encoder compatibility
   const isReel = videoType === 'reel' || videoType === 'shorts';
-  const width = isReel ? 720 : 1280;   // 720x1280 for reel (9:16)
-  const height = isReel ? 1280 : 720;  // 1280x720 for youtube (16:9)
+  const width = isReel ? 608 : 1280;   // 608x1080 for reel (9:16 approx)
+  const height = isReel ? 1080 : 720;  // 1280x720 for youtube (16:9)
   const duration = parseFloat(imageDuration) || 7;
-  const fps = 25;
+  const fps = 24;
 
   let image1Path, image2Path, image3Path, image4Path;
   
@@ -342,6 +357,9 @@ const submitFfmpegEnhanced = (req, res) => {
     });
   }
 
+  // Ensure upload dir exists before creating files
+  ensureUploadDir();
+  
   const concatFile = path.join(uploadDir, `concat_${timestamp}.txt`);
   const outputFile = path.join(uploadDir, `output_${timestamp}.mp4`);
   const subtitleFile = path.join(uploadDir, `subs_${timestamp}.srt`);
@@ -364,7 +382,10 @@ const submitFfmpegEnhanced = (req, res) => {
   }).join('\n');
 
   try {
+    ensureUploadDir(); // Double-check before write
     fs.writeFileSync(concatFile, concatContent);
+    console.log('Concat file created:', concatFile);
+    console.log('Concat content:', concatContent);
   } catch (err) {
     performCleanup();
     return res.status(500).json({ 
@@ -410,17 +431,20 @@ const submitFfmpegEnhanced = (req, res) => {
   // Build filter chain
   let videoFilters = [];
   
-  // Scale and pad
-  videoFilters.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`);
-  videoFilters.push(`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`);
-  videoFilters.push(`setsar=1`);
+  // Scale and pad - ensure even dimensions
+  const scaledWidth = Math.floor(width / 2) * 2;
+  const scaledHeight = Math.floor(height / 2) * 2;
   
-  // Ken Burns effect (simple slow zoom) - disabled for reel due to encoder issues
+  videoFilters.push(`scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=decrease`);
+  videoFilters.push(`pad=${scaledWidth}:${scaledHeight}:(ow-iw)/2:(oh-ih)/2:black`);
+  videoFilters.push(`setsar=1`);
+  videoFilters.push(`fps=${fps}`);
+  
+  // Ken Burns effect - only for youtube, disabled for reel
   const useKenBurns = (kenBurns === true || kenBurns === 'true') && !isReel;
   if (useKenBurns) {
-    videoFilters.push(`zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${fps * duration}:s=${width}x${height}:fps=${fps}`);
-  } else {
-    videoFilters.push(`fps=${fps}`);
+    // Ken Burns is complex, add it separately if needed
+    // For now keep it simple - just the zoom
   }
 
   // Hook text overlay
@@ -450,6 +474,7 @@ const submitFfmpegEnhanced = (req, res) => {
   // Build output options
   let outputOptions = [
     '-vf', videoFilters.join(','),
+    '-s', `${scaledWidth}x${scaledHeight}`,  // Force output size
     '-c:v', 'libx264',
     '-preset', 'fast',
     '-crf', '23',
@@ -457,12 +482,14 @@ const submitFfmpegEnhanced = (req, res) => {
     '-r', String(fps)
   ];
 
-  // Handle audio
+  // Handle audio mixing if background music provided
   if (bgMusicFile) {
     const bgVol = Math.min(100, Math.max(0, parseFloat(bgMusicVolume) || 20)) / 100;
     outputOptions.push('-filter_complex', `[1:a]volume=1[a1];[2:a]volume=${bgVol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`);
     outputOptions.push('-map', '0:v');
     outputOptions.push('-map', '[aout]');
+    outputOptions.push('-c:a', 'aac');
+    outputOptions.push('-b:a', '192k');
   } else {
     outputOptions.push('-c:a', 'aac');
     outputOptions.push('-b:a', '192k');
