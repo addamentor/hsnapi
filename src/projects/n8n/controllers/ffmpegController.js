@@ -454,10 +454,10 @@ const submitFfmpegEnhanced = (req, res) => {
       .replace(/:/g, '\\:')
       .replace(/\\/g, '\\\\');
     
-    const fontSize = isReel ? 36 : 42;
-    const padding = isReel ? 8 : 15;
-    const yPosition = isReel ? 0 : 30;
-    // For reel: y=0 to position at very top; For youtube: y=padding
+    const fontSize = isReel ? 44 : 42;
+    const padding = isReel ? 12 : 15;
+    const yPosition = isReel ? 60 : 30;
+    // For reel: y=60 to position below top edge matching image; For youtube: y=30
     videoFilters.push(
       `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:x=(w-text_w)/2:y=${yPosition}:box=1:boxcolor=black@0.8:boxborderw=${padding}`
     );
