@@ -322,8 +322,8 @@ const submitFfmpegEnhanced = (req, res) => {
 
   // Determine dimensions based on video type
   const isReel = videoType === 'reel' || videoType === 'shorts';
-  const width = isReel ? 1080 : 1280;
-  const height = isReel ? 1920 : 720;
+  const width = isReel ? 720 : 1280;   // 720x1280 for reel (9:16)
+  const height = isReel ? 1280 : 720;  // 1280x720 for youtube (16:9)
   const duration = parseFloat(imageDuration) || 7;
   const fps = 25;
 
@@ -414,13 +414,13 @@ const submitFfmpegEnhanced = (req, res) => {
   videoFilters.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`);
   videoFilters.push(`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`);
   videoFilters.push(`setsar=1`);
-  videoFilters.push(`fps=${fps}`);
   
-  // Ken Burns effect (simple zoom)
-  const useKenBurns = kenBurns === true || kenBurns === 'true';
+  // Ken Burns effect (simple slow zoom) - disabled for reel due to encoder issues
+  const useKenBurns = (kenBurns === true || kenBurns === 'true') && !isReel;
   if (useKenBurns) {
-    const totalFrames = duration * fps * 4; // Total frames for all images
-    videoFilters.push(`zoompan=z='1+0.001*on':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${fps}`);
+    videoFilters.push(`zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${fps * duration}:s=${width}x${height}:fps=${fps}`);
+  } else {
+    videoFilters.push(`fps=${fps}`);
   }
 
   // Hook text overlay
