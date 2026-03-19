@@ -31,6 +31,14 @@ router.post('/ffmpeg/enhanced',
     ffmpeg.submitFfmpegEnhanced
 );
 
+// Cleanup old videos from public folder
+// Query param: days (default 7) - delete videos older than X days
+router.delete('/ffmpeg/cleanup', (req, res) => {
+    const days = parseInt(req.query.days) || 7;
+    const result = ffmpeg.cleanupOldVideos(days);
+    res.json(result);
+});
+
 // TODO: Add N8N specific routes here
 // Example:
 // const userController = require('./controllers/userController');

@@ -16,15 +16,32 @@ if (process.env.FFPROBE_PATH) {
 // Use system temp directory - files are automatically cleaned by OS if not deleted
 const uploadDir = path.join(os.tmpdir(), 'ffmpeg-temp');
 
-// Ensure upload directory exists (called before each operation)
-const ensureUploadDir = () => {
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+// Public video storage directory (for Instagram posting etc.)
+// Set PUBLIC_VIDEO_DIR in .env to your public folder path
+// Set PUBLIC_VIDEO_URL in .env to your public URL base
+const publicVideoDir = process.env.PUBLIC_VIDEO_DIR || path.join(os.tmpdir(), 'public-videos');
+const publicVideoUrl = process.env.PUBLIC_VIDEO_URL || '';
+
+// Ensure directory exists
+const ensureDir = (dir) => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 };
 
-// Create directory on startup
+// Ensure upload directory exists (called before each operation)
+const ensureUploadDir = () => {
+  ensureDir(uploadDir);
+};
+
+// Ensure public video directory exists
+const ensurePublicDir = () => {
+  ensureDir(publicVideoDir);
+};
+
+// Create directories on startup
 ensureUploadDir();
+ensurePublicDir();
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -314,8 +331,11 @@ const submitFfmpegEnhanced = (req, res) => {
     kenBurns = false,
     bgMusicVolume = 20,
     videoType = 'youtube',
-    imageDuration = 7
+    imageDuration = 7,
+    saveVideo = false  // If true, saves video to public folder and returns URL
   } = req.body;
+  
+  const shouldSaveVideo = saveVideo === true || saveVideo === 'true';
 
   // Validate images
   if (!image1 || !image2 || !image3 || !image4) {
@@ -512,27 +532,65 @@ const submitFfmpegEnhanced = (req, res) => {
     .on('end', () => {
       console.log('Enhanced video generation complete');
       
-      const fileStream = fs.createReadStream(outputFile);
-      const stat = fs.statSync(outputFile);
-      
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', 'attachment; filename="generated_video.mp4"');
-      res.setHeader('Content-Length', stat.size);
-      
-      fileStream.pipe(res);
-      
-      fileStream.on('end', () => {
-        console.log('Video sent successfully, cleaning up...');
-        performCleanup();
-      });
-      
-      fileStream.on('error', (err) => {
-        console.error('Stream error:', err.message);
-        performCleanup();
-        if (!res.headersSent) {
-          res.status(500).json({ success: false, error: 'Failed to stream video' });
+      if (shouldSaveVideo) {
+        // Save to public folder and return URL
+        try {
+          ensurePublicDir();
+          const videoFilename = `video_${timestamp}.mp4`;
+          const publicPath = path.join(publicVideoDir, videoFilename);
+          
+          // Copy to public folder
+          fs.copyFileSync(outputFile, publicPath);
+          console.log('Video saved to public folder:', publicPath);
+          
+          // Build public URL
+          const videoUrl = publicVideoUrl 
+            ? `${publicVideoUrl.replace(/\/$/, '')}/${videoFilename}`
+            : `/videos/${videoFilename}`;
+          
+          // Cleanup temp files (but not the public video)
+          cleanupFiles(filesToCleanup.filter(f => f !== outputFile));
+          cleanupFiles([outputFile]); // Delete temp output
+          isCleanedUp = true;
+          
+          return res.json({
+            success: true,
+            url: videoUrl,
+            filename: videoFilename,
+            message: 'Video generated and saved successfully'
+          });
+        } catch (err) {
+          console.error('Failed to save video to public folder:', err.message);
+          performCleanup();
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to save video: ' + err.message
+          });
         }
-      });
+      } else {
+        // Stream video directly (default behavior)
+        const fileStream = fs.createReadStream(outputFile);
+        const stat = fs.statSync(outputFile);
+        
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', 'attachment; filename="generated_video.mp4"');
+        res.setHeader('Content-Length', stat.size);
+        
+        fileStream.pipe(res);
+        
+        fileStream.on('end', () => {
+          console.log('Video sent successfully, cleaning up...');
+          performCleanup();
+        });
+        
+        fileStream.on('error', (err) => {
+          console.error('Stream error:', err.message);
+          performCleanup();
+          if (!res.headersSent) {
+            res.status(500).json({ success: false, error: 'Failed to stream video' });
+          }
+        });
+      }
     })
     .on('error', (err) => {
       console.error('FFmpeg error:', err.message);
@@ -547,9 +605,41 @@ const submitFfmpegEnhanced = (req, res) => {
     .save(outputFile);
 };
 
+// Cleanup old videos from public folder (call via cron or scheduled task)
+const cleanupOldVideos = (daysOld = 7) => {
+  ensurePublicDir();
+  const now = Date.now();
+  const maxAge = daysOld * 24 * 60 * 60 * 1000; // days in ms
+  
+  try {
+    const files = fs.readdirSync(publicVideoDir);
+    let deleted = 0;
+    
+    files.forEach(file => {
+      if (file.endsWith('.mp4')) {
+        const filePath = path.join(publicVideoDir, file);
+        const stat = fs.statSync(filePath);
+        const age = now - stat.mtimeMs;
+        
+        if (age > maxAge) {
+          fs.unlinkSync(filePath);
+          deleted++;
+          console.log(`Deleted old video: ${file}`);
+        }
+      }
+    });
+    
+    return { success: true, deleted, message: `Deleted ${deleted} old videos` };
+  } catch (err) {
+    console.error('Cleanup error:', err.message);
+    return { success: false, error: err.message };
+  }
+};
+
 module.exports = {
   uploadFields,
   uploadFieldsEnhanced,
   submitFfmpeg,
-  submitFfmpegEnhanced
+  submitFfmpegEnhanced,
+  cleanupOldVideos
 };
