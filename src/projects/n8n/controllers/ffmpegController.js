@@ -480,17 +480,59 @@ const submitFfmpegEnhanced = (req, res) => {
   // Hook text overlay - positioned at top with no gap
   // Uses textfile for proper Unicode/Hindi/Emoji support
   if (hookText) {
-    // Save hook text to a temporary file (handles Unicode better than inline text)
-    try {
-      fs.writeFileSync(hookTextFile, hookText, 'utf8');
-      console.log('Hook text file created:', hookTextFile);
-    } catch (err) {
-      console.error('Failed to create hook text file:', err.message);
-    }
-    
     const fontSize = isReel ? 44 : 42;
     const padding = isReel ? 12 : 15;
     const yPosition = isReel ? 60 : 30;
+    
+    // Calculate max characters per line based on video width
+    // Approximate: video width / (fontSize * 0.6) gives rough char count
+    const maxCharsPerLine = isReel ? 18 : 35;
+    
+    // Word-wrap function to split text into multiple lines
+    const wrapText = (text, maxWidth) => {
+      const words = text.split(' ');
+      const lines = [];
+      let currentLine = '';
+      
+      for (const word of words) {
+        // If single word is longer than maxWidth, force break it
+        if (word.length > maxWidth) {
+          if (currentLine) {
+            lines.push(currentLine.trim());
+            currentLine = '';
+          }
+          // Break long word into chunks
+          for (let i = 0; i < word.length; i += maxWidth) {
+            lines.push(word.slice(i, i + maxWidth));
+          }
+        } else if ((currentLine + ' ' + word).trim().length <= maxWidth) {
+          currentLine = (currentLine + ' ' + word).trim();
+        } else {
+          if (currentLine) {
+            lines.push(currentLine.trim());
+          }
+          currentLine = word;
+        }
+      }
+      
+      if (currentLine) {
+        lines.push(currentLine.trim());
+      }
+      
+      // Limit to 3 lines max
+      return lines.slice(0, 3).join('\n');
+    };
+    
+    // Wrap the hook text if too long
+    const wrappedText = wrapText(hookText, maxCharsPerLine);
+    
+    // Save wrapped hook text to a temporary file
+    try {
+      fs.writeFileSync(hookTextFile, wrappedText, 'utf8');
+      console.log('Hook text file created:', hookTextFile, 'Content:', wrappedText);
+    } catch (err) {
+      console.error('Failed to create hook text file:', err.message);
+    }
     
     // Escape the file path for FFmpeg
     const escapedHookPath = formatPath(hookTextFile).replace(/:/g, '\\:');
@@ -502,6 +544,7 @@ const submitFfmpegEnhanced = (req, res) => {
     drawTextFilter += `:x=(w-text_w)/2`;
     drawTextFilter += `:y=${yPosition}`;
     drawTextFilter += `:box=1:boxcolor=black@0.8:boxborderw=${padding}`;
+    drawTextFilter += `:line_spacing=8`; // Add spacing between lines
     
     // Add font file if configured (required for Hindi/Emoji support)
     if (fontPath && fs.existsSync(fontPath)) {
