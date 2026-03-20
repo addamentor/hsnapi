@@ -22,6 +22,15 @@ const uploadDir = path.join(os.tmpdir(), 'ffmpeg-temp');
 const publicVideoDir = process.env.PUBLIC_VIDEO_DIR || path.join(os.tmpdir(), 'public-videos');
 const publicVideoUrl = process.env.PUBLIC_VIDEO_URL || '';
 
+// Font for text overlays (must support Hindi/Devanagari and Unicode)
+// Set FFMPEG_FONT_PATH in .env to point to a Unicode-compatible font
+// Common options on Linux:
+//   /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf
+//   /usr/share/fonts/truetype/freefont/FreeSans.ttf
+//   /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+// You can also download and use: NotoSansDevanagari-Regular.ttf for Hindi
+const fontPath = process.env.FFMPEG_FONT_PATH || '';
+
 // Ensure directory exists
 const ensureDir = (dir) => {
   if (!fs.existsSync(dir)) {
@@ -383,11 +392,12 @@ const submitFfmpegEnhanced = (req, res) => {
   const concatFile = path.join(uploadDir, `concat_${timestamp}.txt`);
   const outputFile = path.join(uploadDir, `output_${timestamp}.mp4`);
   const subtitleFile = path.join(uploadDir, `subs_${timestamp}.srt`);
+  const hookTextFile = path.join(uploadDir, `hook_${timestamp}.txt`);
   
   filesToCleanup = [
     audioFile, bgMusicFile, 
     image1Path, image2Path, image3Path, image4Path, 
-    concatFile, outputFile, subtitleFile
+    concatFile, outputFile, subtitleFile, hookTextFile
   ].filter(Boolean);
 
   // Create concat file
@@ -468,19 +478,38 @@ const submitFfmpegEnhanced = (req, res) => {
   }
 
   // Hook text overlay - positioned at top with no gap
+  // Uses textfile for proper Unicode/Hindi/Emoji support
   if (hookText) {
-    const escapedText = hookText
-      .replace(/'/g, "'\\\\\\''")
-      .replace(/:/g, '\\:')
-      .replace(/\\/g, '\\\\');
+    // Save hook text to a temporary file (handles Unicode better than inline text)
+    try {
+      fs.writeFileSync(hookTextFile, hookText, 'utf8');
+      console.log('Hook text file created:', hookTextFile);
+    } catch (err) {
+      console.error('Failed to create hook text file:', err.message);
+    }
     
     const fontSize = isReel ? 44 : 42;
     const padding = isReel ? 12 : 15;
     const yPosition = isReel ? 60 : 30;
-    // For reel: y=60 to position below top edge matching image; For youtube: y=30
-    videoFilters.push(
-      `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:x=(w-text_w)/2:y=${yPosition}:box=1:boxcolor=black@0.8:boxborderw=${padding}`
-    );
+    
+    // Escape the file path for FFmpeg
+    const escapedHookPath = formatPath(hookTextFile).replace(/:/g, '\\:');
+    
+    // Build drawtext filter with proper font support
+    let drawTextFilter = `drawtext=textfile='${escapedHookPath}'`;
+    drawTextFilter += `:fontsize=${fontSize}`;
+    drawTextFilter += `:fontcolor=white`;
+    drawTextFilter += `:x=(w-text_w)/2`;
+    drawTextFilter += `:y=${yPosition}`;
+    drawTextFilter += `:box=1:boxcolor=black@0.8:boxborderw=${padding}`;
+    
+    // Add font file if configured (required for Hindi/Emoji support)
+    if (fontPath && fs.existsSync(fontPath)) {
+      const escapedFontPath = formatPath(fontPath).replace(/:/g, '\\:');
+      drawTextFilter += `:fontfile='${escapedFontPath}'`;
+    }
+    
+    videoFilters.push(drawTextFilter);
   }
 
   // Build ffmpeg command
