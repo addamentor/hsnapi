@@ -623,7 +623,7 @@ const submitFfmpegEnhanced = async (req, res) => {
   }
 
   // Hook text overlay - using FFmpeg drawtext (pureimage disabled for now due to compatibility issues)
-  const topMargin = isReel ? 50 : 20;
+  const topMargin = isReel ? 60 : 60;
   
   // Temporarily disabled pureimage - uncomment to re-enable once debugged
   /*
