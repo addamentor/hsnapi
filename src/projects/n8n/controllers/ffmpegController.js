@@ -653,7 +653,7 @@ const submitFfmpegEnhanced = async (req, res) => {
     const fontSize = isReel ? 40 : 38;
     const margin = isReel ? 20 : 30;
     const lineHeight = fontSize + 10;
-    const maxCharsPerLine = isReel ? 22 : 45;
+    const maxCharsPerLine = isReel ? 40 : 70;
     
     const wrapText = (text, maxWidth) => {
       const words = text.split(' ');
