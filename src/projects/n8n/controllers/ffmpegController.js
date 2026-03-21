@@ -170,7 +170,8 @@ const createTextOverlayImage = async (text, videoWidth, isReel, outputPath) => {
     
     const lines = wrapText(text, maxTextWidth);
     const numLines = lines.length;
-    const bannerHeight = Math.ceil((numLines * lineHeight) + (padding * 2));
+    let bannerHeight = Math.ceil((numLines * lineHeight) + (padding * 2));
+    bannerHeight = bannerHeight % 2 === 0 ? bannerHeight : bannerHeight + 1;  // Ensure even height
     
     // Create image with pureimage
     const img = PImage.make(videoWidth, bannerHeight);
@@ -201,8 +202,16 @@ const createTextOverlayImage = async (text, videoWidth, isReel, outputPath) => {
       ctx.fill();
     });
     
-    // Save as PNG
-    await PImage.encodePNGToStream(img, fs.createWriteStream(outputPath));
+    // Save as PNG - wrap in promise to ensure stream completes
+    await new Promise((resolve, reject) => {
+      const stream = fs.createWriteStream(outputPath);
+      stream.on('finish', resolve);
+      stream.on('error', reject);
+      PImage.encodePNGToStream(img, stream).catch(reject);
+    });
+    
+    // Small delay to ensure file is written
+    await new Promise(r => setTimeout(r, 100));
     
     console.log(`Text overlay image created: ${outputPath}, height: ${bannerHeight}px`);
     return { success: true, height: bannerHeight };
@@ -604,9 +613,11 @@ const submitFfmpegEnhanced = async (req, res) => {
     // For now keep it simple - just the zoom
   }
 
-  // Hook text overlay - try PureImage first (proper Hindi/Emoji), fallback to FFmpeg drawtext
+  // Hook text overlay - using FFmpeg drawtext (pureimage disabled for now due to compatibility issues)
   const topMargin = isReel ? 50 : 20;
   
+  // Temporarily disabled pureimage - uncomment to re-enable once debugged
+  /*
   if (hookText && pureImageAvailable) {
     // Use PureImage for proper text rendering (Hindi, Emoji support)
     hookImagePath = path.join(uploadDir, `hook_${timestamp}.png`);
@@ -626,6 +637,7 @@ const submitFfmpegEnhanced = async (req, res) => {
       hookImagePath = null;
     }
   }
+  */
   
   if (hookText && !hookImagePath) {
     // Fallback: Use FFmpeg drawtext (limited Hindi/Emoji support)
@@ -690,10 +702,12 @@ const submitFfmpegEnhanced = async (req, res) => {
     .input(concatFile)
     .inputOptions(['-f', 'concat', '-safe', '0']);
   
-  // Add hook image as overlay if using Canvas rendering
-  if (hookImagePath && fs.existsSync(hookImagePath)) {
-    ffmpegCmd.input(hookImagePath);
-  }
+  // Hook image overlay disabled for now
+  // if (hookImagePath && fs.existsSync(hookImagePath)) {
+  //   ffmpegCmd
+  //     .input(hookImagePath)
+  //     .inputOptions(['-loop', '1', '-t', String(duration * 4)]);
+  // }
   
   ffmpegCmd.input(audioFile);
 
@@ -702,10 +716,10 @@ const submitFfmpegEnhanced = async (req, res) => {
     ffmpegCmd.input(bgMusicFile);
   }
 
-  // Adjust input indices based on hook image presence
-  const hasHookImage = hookImagePath && fs.existsSync(hookImagePath);
-  const audioIndex = hasHookImage ? 2 : 1;
-  const bgMusicIndex = hasHookImage ? 3 : 2;
+  // Adjust input indices (hook image disabled, so always: 0=video, 1=audio, 2=bgMusic)
+  const hasHookImage = false;  // Disabled for now
+  const audioIndex = 1;
+  const bgMusicIndex = 2;
 
   // Build combined filter_complex for all scenarios
   let filterComplex = '';
@@ -716,12 +730,8 @@ const submitFfmpegEnhanced = async (req, res) => {
   // Build video filter chain
   const videoFilterChain = videoFilters.join(',');
   
-  if (hasHookImage) {
-    // Canvas overlay mode: combine base video filters with image overlay
-    filterComplex = `[0:v]${videoFilterChain}[base];[1:v]format=rgba[overlay];[base][overlay]overlay=0:${topMargin}[vout]`;
-    videoLabel = '[vout]';
-    useFilterComplex = true;
-  }
+  // Hook image overlay disabled
+  // if (hasHookImage && hookImageHeight > 0) { ... }
   
   if (bgMusicFile) {
     const bgVol = Math.min(100, Math.max(0, parseFloat(bgMusicVolume) || 20)) / 100;
