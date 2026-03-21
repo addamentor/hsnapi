@@ -223,6 +223,9 @@ const createTextOverlayImage = async (text, videoWidth, isReel, outputPath) => {
 
 // Helper to decode base64 and save as temp file
 const saveBase64Image = (base64String, filename) => {
+  // Ensure directory exists before writing
+  ensureUploadDir();
+  
   // Remove data URL prefix if present (e.g., "data:image/png;base64,")
   let base64Data = base64String.replace(/^data:image\/\w+;base64,/, '');
   
@@ -548,9 +551,15 @@ const submitFfmpegEnhanced = async (req, res) => {
   try {
     ensureUploadDir(); // Double-check before write
     fs.writeFileSync(concatFile, concatContent);
-    console.log('Concat file created:', concatFile);
+    
+    // Verify file was created
+    if (!fs.existsSync(concatFile)) {
+      throw new Error('Concat file not found after write');
+    }
+    console.log('Concat file created and verified:', concatFile);
     console.log('Concat content:', concatContent);
   } catch (err) {
+    console.error('Concat file creation failed:', err);
     performCleanup();
     return res.status(500).json({ 
       success: false, 
@@ -677,25 +686,48 @@ const submitFfmpegEnhanced = async (req, res) => {
     const bannerPadding = 15;
     const bannerHeight = (numLines * lineHeight) + (bannerPadding * 2);
     
+    let hookTextCreated = false;
     try {
+      ensureUploadDir();
       fs.writeFileSync(hookTextFile, wrappedText, 'utf8');
+      hookTextCreated = fs.existsSync(hookTextFile);
+      console.log('Hook text file created:', hookTextFile, 'exists:', hookTextCreated);
     } catch (err) {
       console.error('Failed to create hook text file:', err.message);
     }
     
-    const escapedHookPath = formatPath(hookTextFile).replace(/:/g, '\\:');
-    videoFilters.push(`drawbox=x=0:y=${topMargin}:w=iw:h=${bannerHeight}:color=black@0.85:t=fill`);
-    
-    let drawTextFilter = `drawtext=textfile='${escapedHookPath}'`;
-    drawTextFilter += `:fontsize=${fontSize}:fontcolor=white:x=${margin}:y=${topMargin + bannerPadding}:line_spacing=10`;
-    
-    if (fontPath && fs.existsSync(fontPath)) {
-      const escapedFontPath = formatPath(fontPath).replace(/:/g, '\\:');
-      drawTextFilter += `:fontfile='${escapedFontPath}'`;
+    // Only add drawtext filter if text file was created
+    if (hookTextCreated) {
+      const escapedHookPath = formatPath(hookTextFile).replace(/:/g, '\\:');
+      videoFilters.push(`drawbox=x=0:y=${topMargin}:w=iw:h=${bannerHeight}:color=black@0.85:t=fill`);
+      
+      let drawTextFilter = `drawtext=textfile='${escapedHookPath}'`;
+      drawTextFilter += `:fontsize=${fontSize}:fontcolor=white:x=${margin}:y=${topMargin + bannerPadding}:line_spacing=10`;
+      
+      if (fontPath && fs.existsSync(fontPath)) {
+        const escapedFontPath = formatPath(fontPath).replace(/:/g, '\\:');
+        drawTextFilter += `:fontfile='${escapedFontPath}'`;
+      }
+      
+      videoFilters.push(drawTextFilter);
     }
-    
-    videoFilters.push(drawTextFilter);
   }
+
+  // Verify all input files exist before starting FFmpeg
+  const filesToVerify = [concatFile, audioFile, ...images];
+  if (bgMusicFile) filesToVerify.push(bgMusicFile);
+  
+  for (const file of filesToVerify) {
+    if (!fs.existsSync(file)) {
+      console.error('Missing file:', file);
+      performCleanup();
+      return res.status(500).json({
+        success: false,
+        error: `Missing required file: ${path.basename(file)}`
+      });
+    }
+  }
+  console.log('All input files verified');
 
   // Build ffmpeg command
   const ffmpegCmd = ffmpeg()
