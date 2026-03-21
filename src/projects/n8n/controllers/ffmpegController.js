@@ -719,7 +719,6 @@ const submitFfmpegEnhanced = (req, res) => {
 
   // Build output options
   let outputOptions = [
-    '-s', `${scaledWidth}x${scaledHeight}`,
     '-c:v', 'libx264',
     '-preset', 'fast',
     '-crf', '23',
