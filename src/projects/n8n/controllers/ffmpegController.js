@@ -4,6 +4,17 @@ const path = require('path');
 const os = require('os');
 const multer = require('multer');
 
+// Optional: canvas for proper Hindi/Emoji text rendering
+let createCanvas, registerFont;
+try {
+  const canvas = require('canvas');
+  createCanvas = canvas.createCanvas;
+  registerFont = canvas.registerFont;
+  console.log('Canvas module loaded - Hindi/Emoji text support enabled');
+} catch (err) {
+  console.log('Canvas module not available - using FFmpeg drawtext (limited Hindi/Emoji support)');
+}
+
 // Set FFmpeg path if specified in environment variable
 // On Hostinger, set FFMPEG_PATH=/home/YOUR_USERNAME/bin/ffmpeg in .env
 if (process.env.FFMPEG_PATH) {
@@ -85,6 +96,103 @@ const cleanupFiles = (files) => {
       }
     }
   });
+};
+
+/**
+ * Create hook text overlay image using Canvas
+ * Supports Hindi, emojis, and proper text shaping
+ * @param {string} text - The hook text
+ * @param {number} videoWidth - Video width in pixels
+ * @param {boolean} isReel - Whether this is a reel/shorts format
+ * @param {string} outputPath - Path to save the PNG image
+ * @returns {object} - { success, height } where height is the banner height
+ */
+const createTextOverlayImage = (text, videoWidth, isReel, outputPath) => {
+  if (!createCanvas) {
+    return { success: false, error: 'Canvas not available' };
+  }
+  
+  try {
+    // Register custom font if configured
+    let fontFamily = '"Noto Sans", "Noto Sans Devanagari", "Arial Unicode MS", sans-serif';
+    if (registerFont && fontPath && fs.existsSync(fontPath)) {
+      try {
+        registerFont(fontPath, { family: 'CustomFont' });
+        fontFamily = '"CustomFont", "Noto Sans Devanagari", sans-serif';
+        console.log('Using custom font:', fontPath);
+      } catch (fontErr) {
+        console.log('Font registration failed, using system fonts:', fontErr.message);
+      }
+    }
+    
+    const fontSize = isReel ? 36 : 34;
+    const lineHeight = fontSize * 1.4;
+    const padding = 20;
+    const margin = isReel ? 15 : 25;
+    const maxTextWidth = videoWidth - (margin * 2) - (padding * 2);
+    
+    // Create temporary canvas to measure text
+    const measureCanvas = createCanvas(videoWidth, 100);
+    const measureCtx = measureCanvas.getContext('2d');
+    measureCtx.font = `bold ${fontSize}px ${fontFamily}`;
+    
+    // Word wrap function
+    const wrapText = (ctx, text, maxWidth) => {
+      const words = text.split(' ');
+      const lines = [];
+      let currentLine = '';
+      
+      for (const word of words) {
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+        const metrics = ctx.measureText(testLine);
+        
+        if (metrics.width > maxWidth && currentLine) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = testLine;
+        }
+      }
+      if (currentLine) {
+        lines.push(currentLine);
+      }
+      return lines.slice(0, 3); // Max 3 lines
+    };
+    
+    const lines = wrapText(measureCtx, text, maxTextWidth);
+    const numLines = lines.length;
+    const bannerHeight = (numLines * lineHeight) + (padding * 2);
+    
+    // Create final canvas with exact size
+    const canvas = createCanvas(videoWidth, bannerHeight);
+    const ctx = canvas.getContext('2d');
+    
+    // Draw semi-transparent black background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, videoWidth, bannerHeight);
+    
+    // Set text properties
+    ctx.font = `bold ${fontSize}px ${fontFamily}`;
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    
+    // Draw each line
+    lines.forEach((line, index) => {
+      const y = padding + (index * lineHeight);
+      ctx.fillText(line, margin + padding, y);
+    });
+    
+    // Save as PNG
+    const buffer = canvas.toBuffer('image/png');
+    fs.writeFileSync(outputPath, buffer);
+    
+    console.log(`Text overlay image created: ${outputPath}, height: ${bannerHeight}px`);
+    return { success: true, height: bannerHeight };
+  } catch (err) {
+    console.error('Failed to create text overlay image:', err.message);
+    return { success: false, error: err.message };
+  }
 };
 
 // Helper to decode base64 and save as temp file
@@ -460,6 +568,8 @@ const submitFfmpegEnhanced = (req, res) => {
 
   // Build filter chain
   let videoFilters = [];
+  let hookImagePath = null;
+  let hookImageHeight = 0;
   
   // Scale and pad - ensure even dimensions
   const scaledWidth = Math.floor(width / 2) * 2;
@@ -477,76 +587,74 @@ const submitFfmpegEnhanced = (req, res) => {
     // For now keep it simple - just the zoom
   }
 
-  // Hook text overlay - positioned at top with no gap
-  // Uses textfile for proper Unicode/Hindi/Emoji support
-  if (hookText) {
-    const fontSize = isReel ? 44 : 42;
-    const padding = isReel ? 12 : 15;
-    const yPosition = isReel ? 60 : 30;
+  // Hook text overlay - try Canvas first (proper Hindi/Emoji), fallback to FFmpeg drawtext
+  const topMargin = isReel ? 50 : 20;
+  
+  if (hookText && createCanvas) {
+    // Use Canvas for proper text rendering (Hindi, Emoji support)
+    hookImagePath = path.join(uploadDir, `hook_${timestamp}.png`);
+    filesToCleanup.push(hookImagePath);
     
-    // Calculate max characters per line based on video width
-    // Approximate: video width / (fontSize * 0.6) gives rough char count
-    const maxCharsPerLine = isReel ? 18 : 35;
+    const result = createTextOverlayImage(hookText, scaledWidth, isReel, hookImagePath);
+    if (result.success) {
+      hookImageHeight = result.height;
+      console.log('Using Canvas for hook text rendering');
+    } else {
+      console.log('Canvas rendering failed, falling back to FFmpeg drawtext');
+      hookImagePath = null;
+    }
+  }
+  
+  if (hookText && !hookImagePath) {
+    // Fallback: Use FFmpeg drawtext (limited Hindi/Emoji support)
+    const fontSize = isReel ? 40 : 38;
+    const margin = isReel ? 20 : 30;
+    const lineHeight = fontSize + 10;
+    const maxCharsPerLine = isReel ? 22 : 45;
     
-    // Word-wrap function to split text into multiple lines
     const wrapText = (text, maxWidth) => {
       const words = text.split(' ');
       const lines = [];
       let currentLine = '';
       
       for (const word of words) {
-        // If single word is longer than maxWidth, force break it
         if (word.length > maxWidth) {
           if (currentLine) {
             lines.push(currentLine.trim());
             currentLine = '';
           }
-          // Break long word into chunks
           for (let i = 0; i < word.length; i += maxWidth) {
             lines.push(word.slice(i, i + maxWidth));
           }
         } else if ((currentLine + ' ' + word).trim().length <= maxWidth) {
           currentLine = (currentLine + ' ' + word).trim();
         } else {
-          if (currentLine) {
-            lines.push(currentLine.trim());
-          }
+          if (currentLine) lines.push(currentLine.trim());
           currentLine = word;
         }
       }
-      
-      if (currentLine) {
-        lines.push(currentLine.trim());
-      }
-      
-      // Limit to 3 lines max
-      return lines.slice(0, 3).join('\n');
+      if (currentLine) lines.push(currentLine.trim());
+      return lines.slice(0, 3);
     };
     
-    // Wrap the hook text if too long
-    const wrappedText = wrapText(hookText, maxCharsPerLine);
+    const wrappedLines = wrapText(hookText, maxCharsPerLine);
+    const wrappedText = wrappedLines.join('\n');
+    const numLines = wrappedLines.length;
+    const bannerPadding = 15;
+    const bannerHeight = (numLines * lineHeight) + (bannerPadding * 2);
     
-    // Save wrapped hook text to a temporary file
     try {
       fs.writeFileSync(hookTextFile, wrappedText, 'utf8');
-      console.log('Hook text file created:', hookTextFile, 'Content:', wrappedText);
     } catch (err) {
       console.error('Failed to create hook text file:', err.message);
     }
     
-    // Escape the file path for FFmpeg
     const escapedHookPath = formatPath(hookTextFile).replace(/:/g, '\\:');
+    videoFilters.push(`drawbox=x=0:y=${topMargin}:w=iw:h=${bannerHeight}:color=black@0.85:t=fill`);
     
-    // Build drawtext filter with proper font support
     let drawTextFilter = `drawtext=textfile='${escapedHookPath}'`;
-    drawTextFilter += `:fontsize=${fontSize}`;
-    drawTextFilter += `:fontcolor=white`;
-    drawTextFilter += `:x=(w-text_w)/2`;
-    drawTextFilter += `:y=${yPosition}`;
-    drawTextFilter += `:box=1:boxcolor=black@0.8:boxborderw=${padding}`;
-    drawTextFilter += `:line_spacing=8`; // Add spacing between lines
+    drawTextFilter += `:fontsize=${fontSize}:fontcolor=white:x=${margin}:y=${topMargin + bannerPadding}:line_spacing=10`;
     
-    // Add font file if configured (required for Hindi/Emoji support)
     if (fontPath && fs.existsSync(fontPath)) {
       const escapedFontPath = formatPath(fontPath).replace(/:/g, '\\:');
       drawTextFilter += `:fontfile='${escapedFontPath}'`;
@@ -558,38 +666,78 @@ const submitFfmpegEnhanced = (req, res) => {
   // Build ffmpeg command
   const ffmpegCmd = ffmpeg()
     .input(concatFile)
-    .inputOptions(['-f', 'concat', '-safe', '0'])
-    .input(audioFile);
+    .inputOptions(['-f', 'concat', '-safe', '0']);
+  
+  // Add hook image as overlay if using Canvas rendering
+  if (hookImagePath && fs.existsSync(hookImagePath)) {
+    ffmpegCmd.input(hookImagePath);
+  }
+  
+  ffmpegCmd.input(audioFile);
 
   // Add background music if provided
   if (bgMusicFile) {
     ffmpegCmd.input(bgMusicFile);
   }
 
+  // Adjust input indices based on hook image presence
+  const hasHookImage = hookImagePath && fs.existsSync(hookImagePath);
+  const audioIndex = hasHookImage ? 2 : 1;
+  const bgMusicIndex = hasHookImage ? 3 : 2;
+
+  // Build combined filter_complex for all scenarios
+  let filterComplex = '';
+  let useFilterComplex = false;
+  let videoLabel = '0:v';
+  let audioLabel = `${audioIndex}:a`;
+  
+  // Build video filter chain
+  const videoFilterChain = videoFilters.join(',');
+  
+  if (hasHookImage) {
+    // Canvas overlay mode: combine base video filters with image overlay
+    filterComplex = `[0:v]${videoFilterChain}[base];[1:v]format=rgba[overlay];[base][overlay]overlay=0:${topMargin}[vout]`;
+    videoLabel = '[vout]';
+    useFilterComplex = true;
+  }
+  
+  if (bgMusicFile) {
+    const bgVol = Math.min(100, Math.max(0, parseFloat(bgMusicVolume) || 20)) / 100;
+    const audioFilter = `[${audioIndex}:a]volume=1[a1];[${bgMusicIndex}:a]volume=${bgVol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`;
+    
+    if (useFilterComplex) {
+      // Append audio filter to existing filter_complex
+      filterComplex += `;${audioFilter}`;
+    } else {
+      // Start new filter_complex with video and audio
+      filterComplex = `[0:v]${videoFilterChain}[vout];${audioFilter}`;
+      videoLabel = '[vout]';
+    }
+    audioLabel = '[aout]';
+    useFilterComplex = true;
+  }
+
   // Build output options
   let outputOptions = [
-    '-vf', videoFilters.join(','),
-    '-s', `${scaledWidth}x${scaledHeight}`,  // Force output size
+    '-s', `${scaledWidth}x${scaledHeight}`,
     '-c:v', 'libx264',
     '-preset', 'fast',
     '-crf', '23',
     '-pix_fmt', 'yuv420p',
     '-r', String(fps)
   ];
-
-  // Handle audio mixing if background music provided
-  if (bgMusicFile) {
-    const bgVol = Math.min(100, Math.max(0, parseFloat(bgMusicVolume) || 20)) / 100;
-    outputOptions.push('-filter_complex', `[1:a]volume=1[a1];[2:a]volume=${bgVol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`);
-    outputOptions.push('-map', '0:v');
-    outputOptions.push('-map', '[aout]');
-    outputOptions.push('-c:a', 'aac');
-    outputOptions.push('-b:a', '192k');
+  
+  if (useFilterComplex) {
+    outputOptions.unshift('-filter_complex', filterComplex);
+    outputOptions.push('-map', videoLabel);
+    outputOptions.push('-map', audioLabel);
   } else {
-    outputOptions.push('-c:a', 'aac');
-    outputOptions.push('-b:a', '192k');
+    // Simple case: just video filter, no overlay or bg music
+    outputOptions.unshift('-vf', videoFilterChain);
   }
-
+  
+  outputOptions.push('-c:a', 'aac');
+  outputOptions.push('-b:a', '192k');
   outputOptions.push('-shortest');
   outputOptions.push('-movflags', '+faststart');
 
