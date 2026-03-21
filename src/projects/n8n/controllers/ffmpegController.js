@@ -4,15 +4,15 @@ const path = require('path');
 const os = require('os');
 const multer = require('multer');
 
-// Optional: canvas for proper Hindi/Emoji text rendering
-let createCanvas, registerFont;
+// Optional: pureimage for proper Hindi/Emoji text rendering (pure JS, no native deps)
+let PImage, opentype, pureImageAvailable = false;
 try {
-  const canvas = require('canvas');
-  createCanvas = canvas.createCanvas;
-  registerFont = canvas.registerFont;
-  console.log('Canvas module loaded - Hindi/Emoji text support enabled');
+  PImage = require('pureimage');
+  opentype = require('opentype.js');
+  pureImageAvailable = true;
+  console.log('PureImage module loaded - Hindi/Emoji text support enabled');
 } catch (err) {
-  console.log('Canvas module not available - using FFmpeg drawtext (limited Hindi/Emoji support)');
+  console.log('PureImage not available - using FFmpeg drawtext (limited Hindi/Emoji support)');
 }
 
 // Set FFmpeg path if specified in environment variable
@@ -99,30 +99,44 @@ const cleanupFiles = (files) => {
 };
 
 /**
- * Create hook text overlay image using Canvas
+ * Create hook text overlay image using PureImage (pure JS)
  * Supports Hindi, emojis, and proper text shaping
  * @param {string} text - The hook text
  * @param {number} videoWidth - Video width in pixels
  * @param {boolean} isReel - Whether this is a reel/shorts format
  * @param {string} outputPath - Path to save the PNG image
- * @returns {object} - { success, height } where height is the banner height
+ * @returns {Promise<object>} - { success, height } where height is the banner height
  */
-const createTextOverlayImage = (text, videoWidth, isReel, outputPath) => {
-  if (!createCanvas) {
-    return { success: false, error: 'Canvas not available' };
+const createTextOverlayImage = async (text, videoWidth, isReel, outputPath) => {
+  if (!pureImageAvailable || !PImage || !opentype) {
+    return { success: false, error: 'PureImage not available' };
   }
   
   try {
-    // Register custom font if configured
-    let fontFamily = '"Noto Sans", "Noto Sans Devanagari", "Arial Unicode MS", sans-serif';
-    if (registerFont && fontPath && fs.existsSync(fontPath)) {
-      try {
-        registerFont(fontPath, { family: 'CustomFont' });
-        fontFamily = '"CustomFont", "Noto Sans Devanagari", sans-serif';
-        console.log('Using custom font:', fontPath);
-      } catch (fontErr) {
-        console.log('Font registration failed, using system fonts:', fontErr.message);
+    // Load font - must be a TTF/OTF file
+    let font;
+    if (fontPath && fs.existsSync(fontPath)) {
+      font = await opentype.load(fontPath);
+      console.log('Using custom font:', fontPath);
+    } else {
+      // Try common system fonts
+      const defaultFonts = [
+        '/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+      ];
+      for (const f of defaultFonts) {
+        if (fs.existsSync(f)) {
+          font = await opentype.load(f);
+          console.log('Using system font:', f);
+          break;
+        }
       }
+    }
+    
+    if (!font) {
+      return { success: false, error: 'No font available' };
     }
     
     const fontSize = isReel ? 36 : 34;
@@ -131,22 +145,17 @@ const createTextOverlayImage = (text, videoWidth, isReel, outputPath) => {
     const margin = isReel ? 15 : 25;
     const maxTextWidth = videoWidth - (margin * 2) - (padding * 2);
     
-    // Create temporary canvas to measure text
-    const measureCanvas = createCanvas(videoWidth, 100);
-    const measureCtx = measureCanvas.getContext('2d');
-    measureCtx.font = `bold ${fontSize}px ${fontFamily}`;
-    
-    // Word wrap function
-    const wrapText = (ctx, text, maxWidth) => {
+    // Word wrap function using opentype for measurement
+    const wrapText = (text, maxWidth) => {
       const words = text.split(' ');
       const lines = [];
       let currentLine = '';
       
       for (const word of words) {
         const testLine = currentLine ? `${currentLine} ${word}` : word;
-        const metrics = ctx.measureText(testLine);
+        const width = font.getAdvanceWidth(testLine, fontSize);
         
-        if (metrics.width > maxWidth && currentLine) {
+        if (width > maxWidth && currentLine) {
           lines.push(currentLine);
           currentLine = word;
         } else {
@@ -159,33 +168,41 @@ const createTextOverlayImage = (text, videoWidth, isReel, outputPath) => {
       return lines.slice(0, 3); // Max 3 lines
     };
     
-    const lines = wrapText(measureCtx, text, maxTextWidth);
+    const lines = wrapText(text, maxTextWidth);
     const numLines = lines.length;
-    const bannerHeight = (numLines * lineHeight) + (padding * 2);
+    const bannerHeight = Math.ceil((numLines * lineHeight) + (padding * 2));
     
-    // Create final canvas with exact size
-    const canvas = createCanvas(videoWidth, bannerHeight);
-    const ctx = canvas.getContext('2d');
+    // Create image with pureimage
+    const img = PImage.make(videoWidth, bannerHeight);
+    const ctx = img.getContext('2d');
     
     // Draw semi-transparent black background
     ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
     ctx.fillRect(0, 0, videoWidth, bannerHeight);
     
-    // Set text properties
-    ctx.font = `bold ${fontSize}px ${fontFamily}`;
+    // Draw text using opentype paths
     ctx.fillStyle = 'white';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    
-    // Draw each line
     lines.forEach((line, index) => {
-      const y = padding + (index * lineHeight);
-      ctx.fillText(line, margin + padding, y);
+      const y = padding + (index * lineHeight) + fontSize; // baseline position
+      const x = margin + padding;
+      const glyphPath = font.getPath(line, x, y, fontSize);
+      
+      // Convert opentype path to pureimage path
+      ctx.beginPath();
+      glyphPath.commands.forEach(cmd => {
+        switch (cmd.type) {
+          case 'M': ctx.moveTo(cmd.x, cmd.y); break;
+          case 'L': ctx.lineTo(cmd.x, cmd.y); break;
+          case 'Q': ctx.quadraticCurveTo(cmd.x1, cmd.y1, cmd.x, cmd.y); break;
+          case 'C': ctx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y); break;
+          case 'Z': ctx.closePath(); break;
+        }
+      });
+      ctx.fill();
     });
     
     // Save as PNG
-    const buffer = canvas.toBuffer('image/png');
-    fs.writeFileSync(outputPath, buffer);
+    await PImage.encodePNGToStream(img, fs.createWriteStream(outputPath));
     
     console.log(`Text overlay image created: ${outputPath}, height: ${bannerHeight}px`);
     return { success: true, height: bannerHeight };
@@ -410,7 +427,7 @@ const submitFfmpeg = (req, res) => {
  * - audio: main audio/voiceover (required)
  * - bgMusic: background music file (optional)
  */
-const submitFfmpegEnhanced = (req, res) => {
+const submitFfmpegEnhanced = async (req, res) => {
   let filesToCleanup = [];
   let ffmpegProcess = null;
   let isCleanedUp = false;
@@ -587,20 +604,25 @@ const submitFfmpegEnhanced = (req, res) => {
     // For now keep it simple - just the zoom
   }
 
-  // Hook text overlay - try Canvas first (proper Hindi/Emoji), fallback to FFmpeg drawtext
+  // Hook text overlay - try PureImage first (proper Hindi/Emoji), fallback to FFmpeg drawtext
   const topMargin = isReel ? 50 : 20;
   
-  if (hookText && createCanvas) {
-    // Use Canvas for proper text rendering (Hindi, Emoji support)
+  if (hookText && pureImageAvailable) {
+    // Use PureImage for proper text rendering (Hindi, Emoji support)
     hookImagePath = path.join(uploadDir, `hook_${timestamp}.png`);
     filesToCleanup.push(hookImagePath);
     
-    const result = createTextOverlayImage(hookText, scaledWidth, isReel, hookImagePath);
-    if (result.success) {
-      hookImageHeight = result.height;
-      console.log('Using Canvas for hook text rendering');
-    } else {
-      console.log('Canvas rendering failed, falling back to FFmpeg drawtext');
+    try {
+      const result = await createTextOverlayImage(hookText, scaledWidth, isReel, hookImagePath);
+      if (result.success) {
+        hookImageHeight = result.height;
+        console.log('Using PureImage for hook text rendering');
+      } else {
+        console.log('PureImage rendering failed, falling back to FFmpeg drawtext:', result.error);
+        hookImagePath = null;
+      }
+    } catch (imgErr) {
+      console.log('PureImage error, falling back to FFmpeg drawtext:', imgErr.message);
       hookImagePath = null;
     }
   }
