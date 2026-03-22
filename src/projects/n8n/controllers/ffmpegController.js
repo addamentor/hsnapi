@@ -422,7 +422,7 @@ const submitFfmpeg = (req, res) => {
  * Enhanced video creation with:
  * - Hook text overlay (top of video with black background)
  * - Subtitles with timestamps
- * - Ken Burns effect (zoom/pan)
+ * - Ken Burns effect (zoom/pan animations with fade transitions)
  * - Background music with volume control
  * - Video type: youtube (16:9) or reel (9:16)
  * 
@@ -430,9 +430,15 @@ const submitFfmpeg = (req, res) => {
  * - image1, image2, image3, image4: base64 images (required)
  * - hookText: string - text displayed at top (optional)
  * - subtitles: array of {start, end, text} or SRT string (optional)
- * - kenBurns: boolean - apply Ken Burns zoom effect (optional, default false)
+ * - kenBurns: boolean - apply Ken Burns zoom/pan effect with fades (optional, default false)
+ *   When enabled, applies different effects to each image:
+ *   - Zoom in from center, Zoom out from center
+ *   - Pan left-to-right, Pan right-to-left
+ *   - Zoom from corners
+ *   - 0.5s fade transitions between images
  * - bgMusicVolume: number 0-100 - background music volume (optional, default 20)
  * - videoType: 'youtube' | 'reel' - aspect ratio (optional, default 'youtube')
+ *   Note: Ken Burns is only applied for youtube format, not reels
  * - imageDuration: number - seconds per image (optional, default 7)
  * 
  * Files:
@@ -616,11 +622,12 @@ const submitFfmpegEnhanced = async (req, res) => {
   videoFilters.push(`fps=${fps}`);
   
   // Ken Burns effect - only for youtube, disabled for reel
+  // Applies zoom/pan animation to make static images feel dynamic
   const useKenBurns = (kenBurns === true || kenBurns === 'true') && !isReel;
-  if (useKenBurns) {
-    // Ken Burns is complex, add it separately if needed
-    // For now keep it simple - just the zoom
-  }
+  
+  // Note: Ken Burns requires complex filter_complex with zoompan
+  // We'll handle it differently - not using concat demuxer but individual inputs
+  // For now, we add a subtle zoom effect that works with concat
 
   // Hook text overlay - using FFmpeg drawtext (pureimage disabled for now due to compatibility issues)
   const topMargin = isReel ? 60 : 60;
@@ -729,42 +736,101 @@ const submitFfmpegEnhanced = async (req, res) => {
   }
   console.log('All input files verified');
 
-  // Build ffmpeg command
-  const ffmpegCmd = ffmpeg()
-    .input(concatFile)
-    .inputOptions(['-f', 'concat', '-safe', '0']);
-  
-  // Hook image overlay disabled for now
-  // if (hookImagePath && fs.existsSync(hookImagePath)) {
-  //   ffmpegCmd
-  //     .input(hookImagePath)
-  //     .inputOptions(['-loop', '1', '-t', String(duration * 4)]);
-  // }
-  
-  ffmpegCmd.input(audioFile);
+  // Ken Burns effect patterns (zoom/pan combinations)
+  const kenBurnsEffects = [
+    // Zoom in from center
+    { z: 'min(zoom+0.0015,1.5)', x: 'iw/2-(iw/zoom/2)', y: 'ih/2-(ih/zoom/2)' },
+    // Zoom out from center
+    { z: 'if(eq(on,1),1.5,max(zoom-0.0015,1))', x: 'iw/2-(iw/zoom/2)', y: 'ih/2-(ih/zoom/2)' },
+    // Pan left to right with slight zoom
+    { z: 'min(zoom+0.001,1.2)', x: 'if(eq(on,1),0,min(x+2,iw/zoom-iw))', y: 'ih/4' },
+    // Pan right to left with slight zoom  
+    { z: 'min(zoom+0.001,1.2)', x: 'if(eq(on,1),iw/zoom-iw,max(x-2,0))', y: 'ih/4' },
+    // Zoom in from top-left
+    { z: 'min(zoom+0.002,1.5)', x: '0', y: '0' },
+    // Zoom in from bottom-right
+    { z: 'min(zoom+0.002,1.5)', x: 'iw/zoom-iw', y: 'ih/zoom-ih' },
+  ];
 
-  // Add background music if provided
-  if (bgMusicFile) {
-    ffmpegCmd.input(bgMusicFile);
-  }
-
-  // Adjust input indices (hook image disabled, so always: 0=video, 1=audio, 2=bgMusic)
-  const hasHookImage = false;  // Disabled for now
-  const audioIndex = 1;
-  const bgMusicIndex = 2;
-
-  // Build combined filter_complex for all scenarios
+  // Build ffmpeg command - different approach for Ken Burns
+  let ffmpegCmd;
   let filterComplex = '';
   let useFilterComplex = false;
   let videoLabel = '0:v';
-  let audioLabel = `${audioIndex}:a`;
+  let audioLabel = '';
+  let audioIndex, bgMusicIndex;
   
-  // Build video filter chain
+  if (useKenBurns) {
+    // Ken Burns mode: add each image as separate input with zoompan
+    ffmpegCmd = ffmpeg();
+    
+    // Add all images as inputs with loop
+    images.forEach((img) => {
+      ffmpegCmd
+        .input(img)
+        .inputOptions(['-loop', '1', '-t', String(duration)]);
+    });
+    
+    // Calculate total frames per image
+    const framesPerImage = Math.floor(duration * fps);
+    const fadeFrames = Math.floor(fps * 0.5); // 0.5 second fade
+    
+    // Build zoompan filter for each image with different effects + fade in/out
+    const imageFilters = images.map((_, i) => {
+      const effect = kenBurnsEffects[i % kenBurnsEffects.length];
+      // Add fade in at start, fade out at end for smooth transitions
+      const fadeIn = i > 0 ? `,fade=t=in:st=0:d=0.5` : '';
+      const fadeOut = i < images.length - 1 ? `,fade=t=out:st=${duration - 0.5}:d=0.5` : '';
+      return `[${i}:v]scale=8000:-1,zoompan=z='${effect.z}':x='${effect.x}':y='${effect.y}':d=${framesPerImage}:s=${scaledWidth}x${scaledHeight}:fps=${fps}${fadeIn}${fadeOut}[v${i}]`;
+    });
+    
+    // Build concat filter for video
+    const concatInputs = images.map((_, i) => `[v${i}]`).join('');
+    filterComplex = imageFilters.join(';');
+    filterComplex += `;${concatInputs}concat=n=${images.length}:v=1:a=0[vconcat]`;
+    
+    // Add hook text overlay if exists
+    const baseVideoFilters = videoFilters.slice(4).join(','); // Skip scale/pad/setsar/fps (handled by zoompan)
+    if (baseVideoFilters) {
+      filterComplex += `;[vconcat]${baseVideoFilters}[vout]`;
+      videoLabel = '[vout]';
+    } else {
+      videoLabel = '[vconcat]';
+    }
+    
+    // Add audio input
+    audioIndex = images.length;
+    ffmpegCmd.input(audioFile);
+    
+    // Add background music if provided
+    if (bgMusicFile) {
+      bgMusicIndex = images.length + 1;
+      ffmpegCmd.input(bgMusicFile);
+    }
+    
+    useFilterComplex = true;
+  } else {
+    // Standard mode: use concat demuxer
+    ffmpegCmd = ffmpeg()
+      .input(concatFile)
+      .inputOptions(['-f', 'concat', '-safe', '0']);
+    
+    ffmpegCmd.input(audioFile);
+    audioIndex = 1;
+
+    // Add background music if provided
+    if (bgMusicFile) {
+      ffmpegCmd.input(bgMusicFile);
+      bgMusicIndex = 2;
+    }
+  }
+  
+  audioLabel = `${audioIndex}:a`;
+  
+  // Build video filter chain (for non-Ken Burns mode)
   const videoFilterChain = videoFilters.join(',');
   
-  // Hook image overlay disabled
-  // if (hasHookImage && hookImageHeight > 0) { ... }
-  
+  // Handle background music mixing
   if (bgMusicFile) {
     const bgVol = Math.min(100, Math.max(0, parseFloat(bgMusicVolume) || 20)) / 100;
     const audioFilter = `[${audioIndex}:a]volume=1[a1];[${bgMusicIndex}:a]volume=${bgVol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`;
@@ -776,9 +842,12 @@ const submitFfmpegEnhanced = async (req, res) => {
       // Start new filter_complex with video and audio
       filterComplex = `[0:v]${videoFilterChain}[vout];${audioFilter}`;
       videoLabel = '[vout]';
+      useFilterComplex = true;
     }
     audioLabel = '[aout]';
-    useFilterComplex = true;
+  } else if (!useKenBurns && !useFilterComplex) {
+    // Simple case: no Ken Burns, no bg music - just use video filters
+    // Will use -vf instead of filter_complex
   }
 
   // Build output options
