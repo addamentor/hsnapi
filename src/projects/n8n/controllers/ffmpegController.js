@@ -33,14 +33,13 @@ const uploadDir = path.join(os.tmpdir(), 'ffmpeg-temp');
 const publicVideoDir = process.env.PUBLIC_VIDEO_DIR || path.join(os.tmpdir(), 'public-videos');
 const publicVideoUrl = process.env.PUBLIC_VIDEO_URL || '';
 
-// Font for text overlays (must support Hindi/Devanagari and Unicode)
-// Set FFMPEG_FONT_PATH in .env to point to a Unicode-compatible font
-// Common options on Linux:
-//   /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf
-//   /usr/share/fonts/truetype/freefont/FreeSans.ttf
-//   /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-// You can also download and use: NotoSansDevanagari-Regular.ttf for Hindi
+// Font for Hindi/Devanagari text overlays
+// Set FFMPEG_FONT_PATH in .env to a Devanagari-compatible font (e.g. NotoSansDevanagari-Regular.ttf)
+// English/Latin text uses FFmpeg's built-in default font (no config needed)
 const fontPath = process.env.FFMPEG_FONT_PATH || '';
+
+// Detect if text contains Devanagari (Hindi) characters
+const hasDevanagari = (text) => /[\u0900-\u097F]/.test(text);
 
 // Ensure directory exists
 const ensureDir = (dir) => {
@@ -419,12 +418,32 @@ const submitFfmpeg = (req, res) => {
 };
 
 /**
+ * Get audio file duration in seconds using ffprobe
+ * @param {string} filePath - Path to the audio file
+ * @returns {Promise<number>} - Duration in seconds
+ */
+const getAudioDuration = (filePath) => {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) return reject(err);
+      const duration = metadata?.format?.duration;
+      if (duration && !isNaN(duration)) {
+        resolve(parseFloat(duration));
+      } else {
+        reject(new Error('Could not determine audio duration'));
+      }
+    });
+  });
+};
+
+/**
  * Enhanced video creation with:
  * - Hook text overlay (top of video with black background)
  * - Subtitles with timestamps
  * - Ken Burns effect (zoom/pan animations with fade transitions)
  * - Background music with volume control
  * - Video type: youtube (16:9) or reel (9:16)
+ * - Auto image timing based on audio duration
  * 
  * Request body params:
  * - image1, image2, image3, image4: base64 images (required)
@@ -439,7 +458,8 @@ const submitFfmpeg = (req, res) => {
  * - bgMusicVolume: number 0-100 - background music volume (optional, default 20)
  * - videoType: 'youtube' | 'reel' - aspect ratio (optional, default 'youtube')
  *   Note: Ken Burns is only applied for youtube format, not reels
- * - imageDuration: number - seconds per image (optional, default 7)
+ *   Note: Reels are capped at 58 seconds total
+ * - imageDuration: number - seconds per image (optional, auto-calculated from audio if not provided)
  * 
  * Files:
  * - audio: main audio/voiceover (required)
@@ -511,8 +531,24 @@ const submitFfmpegEnhanced = async (req, res) => {
   const isReel = videoType === 'reel' || videoType === 'shorts';
   const width = isReel ? 608 : 1280;   // 608x1080 for reel (9:16 approx)
   const height = isReel ? 1080 : 720;  // 1280x720 for youtube (16:9)
-  const duration = parseFloat(imageDuration) || 7;
   const fps = 24;
+  const numImages = 4;
+
+  // Auto-calculate image duration from audio length
+  let duration;
+  try {
+    const audioDuration = await getAudioDuration(audioFile);
+    console.log(`Audio duration detected: ${audioDuration}s`);
+
+    // For reels/shorts: cap total video at 58 seconds
+    const totalDuration = isReel ? Math.min(audioDuration, 58) : audioDuration;
+    duration = totalDuration / numImages;
+
+    console.log(`Calculated per-image duration: ${duration}s (total: ${totalDuration}s, type: ${videoType})`);
+  } catch (probeErr) {
+    console.warn('Could not detect audio duration, using imageDuration param:', probeErr.message);
+    duration = parseFloat(imageDuration) || 10;
+  }
 
   let image1Path, image2Path, image3Path, image4Path;
   
@@ -711,7 +747,8 @@ const submitFfmpegEnhanced = async (req, res) => {
       let drawTextFilter = `drawtext=textfile='${escapedHookPath}'`;
       drawTextFilter += `:fontsize=${fontSize}:fontcolor=white:x=${margin}:y=${topMargin + bannerPadding}:line_spacing=10`;
       
-      if (fontPath && fs.existsSync(fontPath)) {
+      // Only set fontfile for Hindi/Devanagari text; English uses FFmpeg's default font
+      if (hasDevanagari(hookText) && fontPath && fs.existsSync(fontPath)) {
         const escapedFontPath = formatPath(fontPath).replace(/:/g, '\\:');
         drawTextFilter += `:fontfile='${escapedFontPath}'`;
       }
